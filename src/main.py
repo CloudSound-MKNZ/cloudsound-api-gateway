@@ -16,6 +16,7 @@ from cloudsound_shared.middleware.error_handler import register_exception_handle
 from cloudsound_shared.middleware.correlation import CorrelationIDMiddleware
 from cloudsound_shared.logging import configure_logging, get_logger
 from cloudsound_shared.config.settings import app_settings
+from cloudsound_shared.multitenancy import TenantMiddleware, TenantIdentificationStrategy
 
 from .metrics import init_metrics, record_request
 from .middleware.auth import AuthMiddleware
@@ -71,6 +72,24 @@ app.add_middleware(
 
 # Correlation ID middleware
 app.add_middleware(CorrelationIDMiddleware)
+
+# Tenant middleware (extracts tenant from JWT or header)
+app.add_middleware(
+    TenantMiddleware,
+    strategies=[
+        TenantIdentificationStrategy.JWT_TOKEN,
+        TenantIdentificationStrategy.HEADER,
+    ],
+    exclude_paths=[
+        "/health",
+        "/metrics",
+        "/docs",
+        "/openapi.json",
+        "/api/v1/auth/login",
+        "/api/v1/auth/register",
+    ],
+    require_tenant=False,  # Don't block requests without tenant
+)
 
 # Authentication middleware
 app.add_middleware(AuthMiddleware)
