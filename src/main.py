@@ -3,20 +3,27 @@
 Central entry point for all CloudSound API requests.
 Handles routing, authentication, rate limiting, and request forwarding.
 """
+
+# CI/CD pipeline test - trivial change for main push
 import time
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from fastapi.exceptions import RequestValidationError
 import structlog
 
 from cloudsound_shared.health import router as health_router
 from cloudsound_shared.metrics import get_metrics
-from cloudsound_shared.middleware.error_handler import register_exception_handlers
+from cloudsound_shared.middleware.error_handler import (
+    http_exception_handler,
+    validation_exception_handler,
+    general_exception_handler,
+)
 from cloudsound_shared.middleware.correlation import CorrelationIDMiddleware
 from cloudsound_shared.logging import configure_logging, get_logger
 from cloudsound_shared.config.settings import app_settings
-from cloudsound_shared.multitenancy import TenantMiddleware, TenantIdentificationStrategy
 
 from .metrics import init_metrics, record_request
 from .middleware.auth import AuthMiddleware
@@ -34,18 +41,18 @@ async def lifespan(app: FastAPI):
     """Application lifespan manager."""
     # Startup
     logger.info("api_gateway_starting", version=app_settings.app_version)
-    
+
     # Initialize metrics
     init_metrics(app_settings.app_version)
-    
+
     logger.info(
         "api_gateway_started",
         version=app_settings.app_version,
         environment=app_settings.environment,
     )
-    
+
     yield
-    
+
     # Shutdown
     logger.info("api_gateway_shutdown")
 
@@ -73,24 +80,6 @@ app.add_middleware(
 # Correlation ID middleware
 app.add_middleware(CorrelationIDMiddleware)
 
-# Tenant middleware (extracts tenant from JWT or header)
-app.add_middleware(
-    TenantMiddleware,
-    strategies=[
-        TenantIdentificationStrategy.JWT_TOKEN,
-        TenantIdentificationStrategy.HEADER,
-    ],
-    exclude_paths=[
-        "/health",
-        "/metrics",
-        "/docs",
-        "/openapi.json",
-        "/api/v1/auth/login",
-        "/api/v1/auth/register",
-    ],
-    require_tenant=False,  # Don't block requests without tenant
-)
-
 # Authentication middleware
 app.add_middleware(AuthMiddleware)
 
@@ -106,8 +95,10 @@ app.add_middleware(RateLimitMiddleware, config=rate_limit_config)
 service_registry = ServiceRegistry()
 app.add_middleware(ProxyMiddleware, registry=service_registry, timeout=30.0)
 
-# Register all exception handlers
-register_exception_handlers(app)
+# Exception handlers
+app.add_exception_handler(StarletteHTTPException, http_exception_handler)
+app.add_exception_handler(RequestValidationError, validation_exception_handler)
+app.add_exception_handler(Exception, general_exception_handler)
 
 # Include routers
 app.include_router(health_router)
@@ -119,11 +110,11 @@ app.include_router(gateway_router)
 async def timing_middleware(request: Request, call_next):
     """Record request timing metrics."""
     start_time = time.time()
-    
+
     response = await call_next(request)
-    
+
     duration = time.time() - start_time
-    
+
     # Record metrics
     record_request(
         method=request.method,
@@ -131,10 +122,10 @@ async def timing_middleware(request: Request, call_next):
         status=response.status_code,
         duration=duration,
     )
-    
+
     # Add timing header
     response.headers["X-Response-Time"] = f"{duration:.3f}s"
-    
+
     return response
 
 
@@ -178,5 +169,5 @@ async def api_info():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
 
+    uvicorn.run(app, host="0.0.0.0", port=8000)
